@@ -1,0 +1,6 @@
+{
+  "name": "AMotor",
+  "description": "Una plataforma avanzada y tecnológica de compra de vehículos a domicilio para jóvenes entusiastas, con asesoramiento de IA y un selector tridimensional de marcas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
