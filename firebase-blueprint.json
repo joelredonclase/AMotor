@@ -1,0 +1,69 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Información del perfil de usuario y último inicio de sesión",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "ID exclusivo de Firebase Auth"
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre de pila o completo del usuario"
+        },
+        "email": {
+          "type": "string",
+          "description": "Correo electrónico registrado de Gmail"
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "URL de la imagen de perfil de Google"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha y hora de creación de la cuenta"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha y hora del último acceso"
+        }
+      },
+      "required": ["uid", "name", "email"]
+    },
+    "Cart": {
+      "title": "Cart",
+      "description": "Carrito de compras con los vehículos seleccionados",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "ID del usuario propietario del carrito"
+        },
+        "vehicles": {
+          "type": "array",
+          "description": "Lista de vehículos agregados en formato JSON estructurado"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de última modificación del carrito"
+        }
+      },
+      "required": ["userId", "vehicles"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Colección de perfiles de usuario"
+    },
+    "/carts/{userId}": {
+      "schema": "Cart",
+      "description": "Carritos de compras por identificador de usuario"
+    }
+  }
+}

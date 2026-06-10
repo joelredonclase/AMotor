@@ -2,8 +2,11 @@
 
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { Vehicle } from "@/lib/data";
+import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
+import { auth, googleProvider, syncUserProfile, getCartFromFirestore, saveCartToFirestore } from "@/lib/firebase";
 
 export interface UserProfile {
+  uid: string;
   name: string;
   email: string;
   avatarUrl: string;
@@ -22,7 +25,7 @@ interface AppContextType {
   verifyAge: (age: number, lookingFor: string) => void;
   user: UserProfile | null;
   loginWithGoogle: () => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   cart: Vehicle[];
   addToCart: (vehicle: Vehicle) => void;
   removeFromCart: (vehicleId: string) => void;
@@ -43,9 +46,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     lookingFor: "",
   });
 
-  // Carga inicial desde localStorage para persistencia y soporte sin base de datos por ahora (asíncrono)
+  // Carga inicial y observador en tiempo real de Firebase Auth + Firestore
   useEffect(() => {
-    const loadSavedData = () => {
+    // Cargar configuraciones de forma asíncrona para evitar cascading renders sincrónicos en el efecto
+    const timer = setTimeout(() => {
       const savedTheme = localStorage.getItem("amotor_theme") as "light" | "dark";
       if (savedTheme) {
         setTheme(savedTheme);
@@ -60,30 +64,75 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           lookingFor: savedSearch || "",
         });
       }
+    }, 0);
 
-      // Cargar usuario persistido si existe
-      const savedUser = localStorage.getItem("amotor_user");
-      if (savedUser) {
-        const parsedUser = JSON.parse(savedUser);
-        setUser(parsedUser);
+    // Suscribirse a los cambios del estado de autenticación real de Firebase Auth
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const name = firebaseUser.displayName || "Usuario de Google";
+        const email = firebaseUser.email || "";
+        const avatarUrl = firebaseUser.photoURL || `https://picsum.photos/id/10/150/150`;
+        const profile: UserProfile = {
+          uid: firebaseUser.uid,
+          name,
+          email,
+          avatarUrl,
+        };
+        setUser(profile);
 
-        // Cargar carrito específico del usuario
-        const savedUserCart = localStorage.getItem(`amotor_cart_${parsedUser.email}`);
-        if (savedUserCart) {
-          setCart(JSON.parse(savedUserCart));
+        // Obtener elementos del carrito de invitado por si hay que migrar
+        const guestCartData = localStorage.getItem("amotor_cart_guest");
+        let guestCartItems: Vehicle[] = [];
+        if (guestCartData) {
+          try {
+            guestCartItems = JSON.parse(guestCartData);
+          } catch (e) {
+            console.error("Error al parsear el carrito de invitado:", e);
+          }
         }
+
+        // Obtener del Firestore el carrito persistente del usuario
+        const firestoreCartItems = await getCartFromFirestore(firebaseUser.uid);
+        let finalCart: Vehicle[] = firestoreCartItems || [];
+
+        // Si hay elementos de invitado locales, migrarlos uniéndolos al de Firestore
+        if (guestCartItems.length > 0) {
+          const combined = [...finalCart];
+          guestCartItems.forEach((guestItem) => {
+            if (!combined.some((userItem) => userItem.id === guestItem.id)) {
+              combined.push(guestItem);
+            }
+          });
+          finalCart = combined;
+          
+          // Escribir en Firestore el carrito migrado combinado
+          await saveCartToFirestore(firebaseUser.uid, finalCart);
+          
+          // Limpiar el carrito de invitado para evitar doble migración
+          localStorage.removeItem("amotor_cart_guest");
+        }
+
+        setCart(finalCart);
       } else {
-        // Cargar carrito de invitado
+        setUser(null);
+        // Si no está registrado o autenticado, cargar el carrito de invitado local
         const savedGuestCart = localStorage.getItem("amotor_cart_guest");
         if (savedGuestCart) {
-          setCart(JSON.parse(savedGuestCart));
+          try {
+            setCart(JSON.parse(savedGuestCart));
+          } catch (e) {
+            setCart([]);
+          }
+        } else {
+          setCart([]);
         }
       }
-    };
+    });
 
-    // Usamos setTimeout para posponer la actualización al final de la cola de eventos y evitar cascading renders
-    const timer = setTimeout(loadSavedData, 0);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
   }, []);
 
   // Guardar tema cada vez que cambie
@@ -109,85 +158,57 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Simulación de Login de Google mediade una ventana modal limpia (Popup local)
+  // Iniciar Sesión de Google usando ventana emergente (Popup nativo de Firebase SDK)
   const loginWithGoogle = async () => {
-    return new Promise<void>((resolve) => {
-      // Simulamos la apertura de una ventana emergente y respuesta en 1 segundo
-      setTimeout(() => {
-        const mockNames = [
-          "Joel Redón",
-          "Alejandro García",
-          "Clara Martínez",
-          "Mateo Ruiz",
-          "Sofía Fernández",
-        ];
-        const randomName = mockNames[Math.floor(Math.random() * mockNames.length)];
-        const mockEmail = `${randomName.toLowerCase().replace(" ", "")}@consolacionburriana.com`;
-        const randomId = Math.floor(Math.random() * 80);
-        const mockAvatar = `https://picsum.photos/id/${randomId}/150/150`;
-
-        const loggedInUser: UserProfile = {
-          name: randomName,
-          email: mockEmail,
-          avatarUrl: mockAvatar,
-        };
-
-        setUser(loggedInUser);
-        localStorage.setItem("amotor_user", JSON.stringify(loggedInUser));
-
-        // MIGRACIÓN REQUERIDA DE INVITADO A CUENTA EN FIRESTORE (simulada aquí con LocalStorage)
-        // Obtenemos los elementos que estaban en el carrito de invitado y los unimos al de cuenta
-        const guestCartData = localStorage.getItem("amotor_cart_guest");
-        let guestCartItems: Vehicle[] = [];
-        if (guestCartData) {
-          guestCartItems = JSON.parse(guestCartData);
-        }
-
-        const userCartData = localStorage.getItem(`amotor_cart_${mockEmail}`);
-        let userCartItems: Vehicle[] = [];
-        if (userCartData) {
-          userCartItems = JSON.parse(userCartData);
-        }
-
-        // Combinar carritos evitando duplicados de vehículos basándonos en ID
-        const combinedCart = [...userCartItems];
-        guestCartItems.forEach((guestItem) => {
-          if (!combinedCart.some((userItem) => userItem.id === guestItem.id)) {
-            combinedCart.push(guestItem);
-          }
-        });
-
-        setCart(combinedCart);
-        localStorage.setItem(`amotor_cart_${mockEmail}`, JSON.stringify(combinedCart));
-
-        // Limpiar el del invitado una vez migrado de manera exitosa
-        localStorage.removeItem("amotor_cart_guest");
-        resolve();
-      }, 1000);
-    });
-  };
-
-  // Cerrar sesión
-  const logout = () => {
-    if (user) {
-      // Guardar de forma ultra segura el estado final
-      localStorage.setItem(`amotor_cart_${user.email}`, JSON.stringify(cart));
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const firebaseUser = result.user;
+      if (firebaseUser) {
+        const name = firebaseUser.displayName || "Usuario de Google";
+        const email = firebaseUser.email || "";
+        const avatarUrl = firebaseUser.photoURL || `https://picsum.photos/id/10/150/150`;
+        // Sincronizar el perfil del usuario de forma persistente en Firestore en su login
+        await syncUserProfile(firebaseUser.uid, name, email, avatarUrl);
+      }
+    } catch (err) {
+      console.error("Error en loginWithGoogle de Firebase Auth:", err);
+      throw err;
     }
-    setUser(null);
-    setCart([]);
-    localStorage.removeItem("amotor_user");
-    // Restamos el estado de carrito a vacío para simular desconexión
   };
 
-  // Añadir al carrito
+  // Cerrar sesión en Firebase Auth
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      setCart([]);
+      
+      // Intentar cargar el carrito de invitado existente tras desloguearse
+      const savedGuestCart = localStorage.getItem("amotor_cart_guest");
+      if (savedGuestCart) {
+        try {
+          setCart(JSON.parse(savedGuestCart));
+        } catch (e) {
+          setCart([]);
+        }
+      } else {
+        setCart([]);
+      }
+    } catch (err) {
+      console.error("Error al cerrar sesión mediante Firebase Auth:", err);
+    }
+  };
+
+  // Añadir un vehículo al carrito de forma progresiva y sincronizada
   const addToCart = (vehicle: Vehicle) => {
     setCart((prev) => {
       const exists = prev.some((item) => item.id === vehicle.id);
-      if (exists) return prev; // No añadir duplicados
+      if (exists) return prev; // Prevenir duplicidades innecesarias
 
       const updated = [...prev, vehicle];
       if (user) {
-        localStorage.setItem(`amotor_cart_${user.email}`, JSON.stringify(updated));
+        // Guardar asíncronamente en Firestore
+        saveCartToFirestore(user.uid, updated).catch(console.error);
       } else {
         localStorage.setItem("amotor_cart_guest", JSON.stringify(updated));
       }
@@ -195,12 +216,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  // Quitar del carrito
+  // Quitar un vehículo del carrito y sincronizar cambios
   const removeFromCart = (vehicleId: string) => {
     setCart((prev) => {
       const updated = prev.filter((item) => item.id !== vehicleId);
       if (user) {
-        localStorage.setItem(`amotor_cart_${user.email}`, JSON.stringify(updated));
+        // Sincronizar asíncronamente con Firestore
+        saveCartToFirestore(user.uid, updated).catch(console.error);
       } else {
         localStorage.setItem("amotor_cart_guest", JSON.stringify(updated));
       }
